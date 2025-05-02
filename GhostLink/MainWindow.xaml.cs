@@ -20,6 +20,7 @@ namespace GhostLink
         {
             InitializeComponent();
             StartListening();
+            StartDiscoveryListener();
         }
 
         private void InputBox_KeyDown(object sender, KeyEventArgs e)
@@ -33,11 +34,7 @@ namespace GhostLink
 
         private void StartListening()
         {
-            if (!int.TryParse(PortTextBox.Text, out int port))
-            {
-                UpdateStatus("Invalid port. Listener not started.");
-                return;
-            }
+            int port = ListeningPort;
 
             listener = new TcpListener(IPAddress.Any, port);
             listener.Start();
@@ -51,6 +48,59 @@ namespace GhostLink
 
             UpdateStatus($"Listening on port {port}...");
         }
+
+        private void StartDiscoveryListener()
+        {
+            Thread discoveryThread = new Thread(() =>
+            {
+                try
+                {
+                    UdpClient udpListener = new UdpClient();
+                    udpListener.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                    udpListener.Client.Bind(new IPEndPoint(IPAddress.Any, SearchingPort));
+
+                    IPEndPoint remoteEP = new IPEndPoint(IPAddress.Any, 0);
+
+                    while (true)
+                    {
+                        byte[] received = udpListener.Receive(ref remoteEP);
+                        string message = Encoding.UTF8.GetString(received);
+
+                        if (message.Contains("GhostLink Discovery Request"))
+                        {
+                            string reply = $"GhostLink Response from {UsernameTextBox?.Text ?? "Unknown"}";
+                            byte[] replyBytes = Encoding.UTF8.GetBytes(reply);
+
+                            udpListener.Send(replyBytes, replyBytes.Length, remoteEP);
+
+                            Dispatcher.Invoke(() =>
+                            {
+                                string peerName = message.Replace("GhostLink Response from ", "").Trim();
+                                string display = $"{peerName} ({remoteEP.Address})";
+
+                                if (!PeerListBox.Items.Contains(display))
+                                {
+                                    PeerListBox.Items.Add(display);
+                                    AddMessage($"[Discovery] {display} discovered.", isOwnMessage: true);
+                                }
+                            });
+
+                        }
+                    }
+                }
+                catch (SocketException ex)
+                {
+                    Console.WriteLine($"[UDP] Discovery listener error: {ex.Message}");
+                    Dispatcher.Invoke(() => UpdateStatus("Discovery listener error."));
+                }
+            })
+            {
+                IsBackground = true
+            };
+
+            discoveryThread.Start();
+        }
+
 
         private async void ListenForClientsAsync()
         {
@@ -122,11 +172,6 @@ namespace GhostLink
                 MessageBox.Show("Invalid IP address.");
                 return;
             }
-            if (!int.TryParse(PortTextBox.Text, out var port) || port < 1 || port > 65535)
-            {
-                MessageBox.Show("Invalid port number.");
-                return;
-            }
 
             string fullMessage = string.IsNullOrEmpty(username) ? messageText : $"{username}: {messageText}";
 
@@ -136,7 +181,7 @@ namespace GhostLink
                 {
                     using (var client = new TcpClient())
                     {
-                        client.Connect(ip, port);
+                        client.Connect(ip, ListeningPort);
                         using (var stream = client.GetStream())
                         {
                             byte[] data = Encoding.UTF8.GetBytes(fullMessage);
@@ -156,24 +201,10 @@ namespace GhostLink
             InputBox.Clear();
         }
 
-        private void SendTestMessageToSelf(object sender, RoutedEventArgs e)
-        {
-            string username = UsernameTextBox?.Text.Trim();
-            string selfMessage = $"{username}: This is a self-test message.";
-            AddMessage(selfMessage, isOwnMessage: true);
-            UpdateStatus("Test message added.");
-        }
-
         private void BroadcastDiscovery_Click(object sender, RoutedEventArgs e)
         {
-            if (!int.TryParse(DiscoveryPortBox.Text, out int port) || port < 1 || port > 65535)
-            {
-                UpdateStatus("Invalid discovery port.");
-                return;
-            }
-
             UdpClient udpClient = new UdpClient();
-            IPEndPoint endPoint = new IPEndPoint(IPAddress.Broadcast, port);
+            IPEndPoint endPoint = new IPEndPoint(IPAddress.Broadcast, SearchingPort);
             string discoveryMessage = $"GhostLink Discovery Request from {UsernameTextBox.Text}";
             byte[] data = Encoding.UTF8.GetBytes(discoveryMessage);
 
