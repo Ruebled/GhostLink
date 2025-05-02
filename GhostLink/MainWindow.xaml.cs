@@ -13,6 +13,8 @@ namespace GhostLink
         private TcpListener listener;
         private bool isListening = false;
         private const int BufferSize = 1024;
+        private const int ListeningPort = 5005;
+        private const int SearchingPort = 5050;
 
         public MainWindow()
         {
@@ -85,11 +87,8 @@ namespace GhostLink
         private void AddMessage(string message, bool isOwnMessage = false)
         {
             string formatted = message;
-            if (TimestampToggle?.IsChecked == true)
-            {
-                string timestamp = DateTime.Now.ToString("HH:mm");
-                formatted = $"[{timestamp}] {message}";
-            }
+            string timestamp = DateTime.Now.ToString("HH:mm:ss");
+            formatted = $"[{timestamp}] {message}";
 
             var textBlock = new TextBlock
             {
