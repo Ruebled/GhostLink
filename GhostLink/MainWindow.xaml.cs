@@ -68,11 +68,14 @@ namespace GhostLink
 
                         if (message.Contains("GhostLink Discovery Request"))
                         {
+                            // It's a request. Reply with your username.
                             string reply = $"GhostLink Response from {UsernameTextBox?.Text ?? "Unknown"}";
                             byte[] replyBytes = Encoding.UTF8.GetBytes(reply);
-
                             udpListener.Send(replyBytes, replyBytes.Length, remoteEP);
-
+                        }
+                        else if (message.Contains("GhostLink Response from"))
+                        {
+                            // It's a response. Add to peer list.
                             Dispatcher.Invoke(() =>
                             {
                                 string peerName = message.Replace("GhostLink Response from ", "").Trim();
@@ -84,8 +87,8 @@ namespace GhostLink
                                     AddMessage($"[Discovery] {display} discovered.", isOwnMessage: true);
                                 }
                             });
-
                         }
+
                     }
                 }
                 catch (SocketException ex)
