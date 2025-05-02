@@ -1,9 +1,6 @@
-﻿using System;
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -12,7 +9,6 @@ namespace GhostLink
 {
     public partial class MainWindow : Window
     {
-        // TCP listener for incoming chat messages
         private TcpListener listener;
         private bool isListening = false;
         private const int BufferSize = 1024;
@@ -20,30 +16,30 @@ namespace GhostLink
         public MainWindow()
         {
             InitializeComponent();
-            StartListening();              // Start TCP listener
+            StartListening();
         }
 
-        /// <summary>
-        /// Starts the TCP listener on the port specified in the UI.
-        /// </summary>
         private void StartListening()
         {
-            int port = int.Parse(PortTextBox.Text);
+            if (!int.TryParse(PortTextBox.Text, out int port))
+            {
+                UpdateStatus("Invalid port. Listener not started.");
+                return;
+            }
+
             listener = new TcpListener(IPAddress.Any, port);
             listener.Start();
             isListening = true;
 
-            // Run accept loop on background thread
             Thread listenerThread = new Thread(ListenForClientsAsync)
             {
                 IsBackground = true
             };
             listenerThread.Start();
+
+            UpdateStatus($"Listening on port {port}...");
         }
 
-        /// <summary>
-        /// Accepts incoming TCP connections and displays messages.
-        /// </summary>
         private async void ListenForClientsAsync()
         {
             while (isListening)
@@ -51,11 +47,12 @@ namespace GhostLink
                 try
                 {
                     var client = await listener.AcceptTcpClientAsync();
-                    _ = HandleClientAsync(client); // Fire-and-forget
+                    _ = HandleClientAsync(client);
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"[TCP] Listener error: {ex.Message}");
+                    UpdateStatus("Listener error.");
                 }
             }
         }
@@ -75,14 +72,14 @@ namespace GhostLink
             }
         }
 
-
-        /// <summary>
-        /// Displays a message in IRC-style format: [HH:mm] message
-        /// </summary>
         private void AddMessage(string message, bool isOwnMessage = false)
         {
-            string timestamp = DateTime.Now.ToString("HH:mm");
-            string formatted = $"[{timestamp}] {message}";
+            string formatted = message;
+            if (TimestampToggle?.IsChecked == true)
+            {
+                string timestamp = DateTime.Now.ToString("HH:mm");
+                formatted = $"[{timestamp}] {message}";
+            }
 
             var textBlock = new TextBlock
             {
@@ -91,27 +88,24 @@ namespace GhostLink
                 FontSize = 14,
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = isOwnMessage
-                    ? new SolidColorBrush(Color.FromRgb(144, 238, 144)) // Light green for own messages
+                    ? new SolidColorBrush(Color.FromRgb(144, 238, 144))
                     : new SolidColorBrush(Colors.White)
             };
 
             ChatPanel.Children.Add(textBlock);
 
-            // Auto-scroll if ChatPanel is inside a ScrollViewer
             if (VisualTreeHelper.GetParent(ChatPanel) is ScrollViewer scroll)
             {
                 scroll.ScrollToEnd();
             }
         }
 
-        /// <summary>
-        /// Sends a chat message over TCP to the specified IP and port.
-        /// </summary>
         private void Send_Click(object sender, RoutedEventArgs e)
         {
-            string message = InputBox.Text.Trim();
+            string messageText = InputBox.Text.Trim();
+            string username = UsernameTextBox?.Text.Trim();
 
-            if (string.IsNullOrEmpty(message))
+            if (string.IsNullOrEmpty(messageText))
                 return;
 
             if (!IPAddress.TryParse(IpTextBox.Text, out var ip))
@@ -125,6 +119,7 @@ namespace GhostLink
                 return;
             }
 
+            string fullMessage = string.IsNullOrEmpty(username) ? messageText : $"{username}: {messageText}";
 
             Task.Run(() =>
             {
@@ -135,31 +130,85 @@ namespace GhostLink
                         client.Connect(ip, port);
                         using (var stream = client.GetStream())
                         {
-                            byte[] data = Encoding.UTF8.GetBytes(message);
+                            byte[] data = Encoding.UTF8.GetBytes(fullMessage);
                             stream.Write(data, 0, data.Length);
                         }
                     }
 
-                    // Update UI with our sent message
-                    Dispatcher.Invoke(() => AddMessage(message, isOwnMessage: true));
+                    Dispatcher.Invoke(() => AddMessage(fullMessage, isOwnMessage: true));
                 }
                 catch (SocketException ex)
                 {
                     Console.WriteLine($"[TCP] Send error: {ex.Message}");
+                    Dispatcher.Invoke(() => UpdateStatus("Send failed."));
                 }
             });
 
             InputBox.Clear();
         }
 
-        private void Connect_Click(object sender, RoutedEventArgs e)
+        private void SendTestMessageToSelf(object sender, RoutedEventArgs e)
         {
-            // Reserved for future persistent connection logic
+            string username = UsernameTextBox?.Text.Trim();
+            string selfMessage = $"{username}: This is a self-test message.";
+            AddMessage(selfMessage, isOwnMessage: true);
+            UpdateStatus("Test message added.");
         }
 
-        /// <summary>
-        /// Ensure listener stops when window closes
-        /// </summary>
+        private void BroadcastDiscovery_Click(object sender, RoutedEventArgs e)
+        {
+            if (!int.TryParse(DiscoveryPortBox.Text, out int port) || port < 1 || port > 65535)
+            {
+                UpdateStatus("Invalid discovery port.");
+                return;
+            }
+
+            UdpClient udpClient = new UdpClient();
+            IPEndPoint endPoint = new IPEndPoint(IPAddress.Broadcast, port);
+            string discoveryMessage = $"GhostLink Discovery Request from {UsernameTextBox.Text}";
+            byte[] data = Encoding.UTF8.GetBytes(discoveryMessage);
+
+            try
+            {
+                udpClient.EnableBroadcast = true;
+                udpClient.Send(data, data.Length, endPoint);
+                UpdateStatus("Discovery message sent.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[UDP] Discovery error: {ex.Message}");
+                UpdateStatus("Discovery failed.");
+            }
+            finally
+            {
+                udpClient.Close();
+            }
+        }
+
+        private void StartChatWithSelectedPeer(object sender, RoutedEventArgs e)
+        {
+            if (PeerListBox.SelectedItem is string peerName)
+            {
+                ChatWithLabel.Text = $"Chatting with: {peerName}";
+                SelectedPeerText.Text = peerName;
+                UpdateStatus($"Chatting with {peerName}.");
+            }
+            else
+            {
+                UpdateStatus("No peer selected.");
+            }
+        }
+
+        private void UpdateStatus(string text)
+        {
+            StatusText.Text = text;
+        }
+
+        private void Connect_Click(object sender, RoutedEventArgs e)
+        {
+            UpdateStatus("Manual connection initiated.");
+        }
+
         protected override void OnClosed(EventArgs e)
         {
             base.OnClosed(e);
