@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 
 namespace GhostLink
@@ -17,6 +18,15 @@ namespace GhostLink
         {
             InitializeComponent();
             StartListening();
+        }
+
+        private void InputBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                Send_Click(this, new RoutedEventArgs());
+                e.Handled = true;
+            }
         }
 
         private void StartListening()
@@ -189,7 +199,7 @@ namespace GhostLink
         {
             if (PeerListBox.SelectedItem is string peerName)
             {
-                ChatWithLabel.Text = $"Chatting with: {peerName}";
+                ChatHeader.Text = $"Chatting with: {peerName}";
                 SelectedPeerText.Text = peerName;
                 UpdateStatus($"Chatting with {peerName}.");
             }
