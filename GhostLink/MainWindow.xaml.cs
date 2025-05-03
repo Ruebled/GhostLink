@@ -49,6 +49,13 @@ namespace GhostLink
             UpdateStatus($"Listening on port {port}...");
         }
 
+        bool IsFromSelf(IPAddress address)
+        {
+            var localIPs = Dns.GetHostAddresses(Dns.GetHostName());
+            return localIPs.Contains(address);
+        }
+
+
         private void StartDiscoveryListener()
         {
             Thread discoveryThread = new Thread(() =>
@@ -65,12 +72,11 @@ namespace GhostLink
                         byte[] received = udpListener.Receive(ref remoteEP);
                         string message = Encoding.UTF8.GetString(received);
 
-                        if (remoteEP.Address.Equals(Dns.GetHostEntry(Dns.GetHostName()).AddressList[0]))
+                        if (IsFromSelf(remoteEP.Address))
                         {
                             // Skip self response
-                            return;
+                            continue;
                         }
-
 
                         if (message.Contains("GhostLink Discovery Request"))
                         {
