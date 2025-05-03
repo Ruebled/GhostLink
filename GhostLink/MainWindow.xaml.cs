@@ -13,8 +13,8 @@ namespace GhostLink
         private TcpListener listener;
         private bool isListening = false;
         private const int BufferSize = 1024;
-        private const int ListeningPort = 5005;
-        private const int SearchingPort = 5050;
+        private const int ChatPort = 5005;      // Listening port for chat messages
+        private const int DiscoveryPort = 5051; // Port for discovery requests
 
         public MainWindow()
         {
@@ -34,7 +34,7 @@ namespace GhostLink
 
         private void StartListening()
         {
-            int port = ListeningPort;
+            int port = ChatPort;
 
             listener = new TcpListener(IPAddress.Any, port);
             listener.Start();
@@ -55,9 +55,8 @@ namespace GhostLink
             {
                 try
                 {
-                    UdpClient udpListener = new UdpClient();
-                    udpListener.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-                    udpListener.Client.Bind(new IPEndPoint(IPAddress.Any, SearchingPort));
+                    UdpClient udpListener = new UdpClient(DiscoveryPort); // Correct way
+                    Console.WriteLine("UDP listener bound to port " + DiscoveryPort);
 
                     IPEndPoint remoteEP = new IPEndPoint(IPAddress.Any, 0);
 
@@ -66,16 +65,27 @@ namespace GhostLink
                         byte[] received = udpListener.Receive(ref remoteEP);
                         string message = Encoding.UTF8.GetString(received);
 
+                        if (remoteEP.Address.Equals(Dns.GetHostEntry(Dns.GetHostName()).AddressList[0]))
+                        {
+                            // Skip self response
+                            return;
+                        }
+
+
                         if (message.Contains("GhostLink Discovery Request"))
                         {
-                            // It's a request. Reply with your username.
-                            string reply = $"GhostLink Response from {UsernameTextBox?.Text ?? "Unknown"}";
+                            string username = "Unknown";
+                            Dispatcher.Invoke(() =>
+                            {
+                                username = UsernameTextBox?.Text ?? "Unknown";
+                            });
+
+                            string reply = $"GhostLink Response from {username}";
                             byte[] replyBytes = Encoding.UTF8.GetBytes(reply);
                             udpListener.Send(replyBytes, replyBytes.Length, remoteEP);
                         }
                         else if (message.Contains("GhostLink Response from"))
                         {
-                            // It's a response. Add to peer list.
                             Dispatcher.Invoke(() =>
                             {
                                 string peerName = message.Replace("GhostLink Response from ", "").Trim();
@@ -88,7 +98,6 @@ namespace GhostLink
                                 }
                             });
                         }
-
                     }
                 }
                 catch (SocketException ex)
@@ -103,7 +112,6 @@ namespace GhostLink
 
             discoveryThread.Start();
         }
-
 
         private async void ListenForClientsAsync()
         {
@@ -184,7 +192,7 @@ namespace GhostLink
                 {
                     using (var client = new TcpClient())
                     {
-                        client.Connect(ip, ListeningPort);
+                        client.Connect(ip, ChatPort);
                         using (var stream = client.GetStream())
                         {
                             byte[] data = Encoding.UTF8.GetBytes(fullMessage);
@@ -207,7 +215,7 @@ namespace GhostLink
         private void BroadcastDiscovery_Click(object sender, RoutedEventArgs e)
         {
             UdpClient udpClient = new UdpClient();
-            IPEndPoint endPoint = new IPEndPoint(IPAddress.Broadcast, SearchingPort);
+            IPEndPoint endPoint = new IPEndPoint(IPAddress.Broadcast, DiscoveryPort);
             string discoveryMessage = $"GhostLink Discovery Request from {UsernameTextBox.Text}";
             byte[] data = Encoding.UTF8.GetBytes(discoveryMessage);
 
