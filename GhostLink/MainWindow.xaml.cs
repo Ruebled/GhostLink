@@ -1,6 +1,10 @@
-﻿using System.Net;
+﻿using System;
+using System.Linq;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -13,8 +17,8 @@ namespace GhostLink
         private TcpListener listener;
         private bool isListening = false;
         private const int BufferSize = 1024;
-        private const int ChatPort = 5005;      // Listening port for chat messages
-        private const int DiscoveryPort = 5051; // Port for discovery requests
+        private const int ChatPort = 5005;
+        private const int DiscoveryPort = 5051;
 
         public MainWindow()
         {
@@ -34,27 +38,21 @@ namespace GhostLink
 
         private void StartListening()
         {
-            int port = ChatPort;
-
-            listener = new TcpListener(IPAddress.Any, port);
+            listener = new TcpListener(IPAddress.Any, ChatPort);
             listener.Start();
             isListening = true;
 
-            Thread listenerThread = new Thread(ListenForClientsAsync)
-            {
-                IsBackground = true
-            };
+            Thread listenerThread = new Thread(ListenForClientsAsync) { IsBackground = true };
             listenerThread.Start();
 
-            UpdateStatus($"Listening on port {port}...");
+            Dispatcher.Invoke(() => UpdateStatus($"Listening on port {ChatPort}..."));
         }
 
-        bool IsFromSelf(IPAddress address)
+        private bool IsFromSelf(IPAddress address)
         {
             var localIPs = Dns.GetHostAddresses(Dns.GetHostName());
             return localIPs.Contains(address);
         }
-
 
         private void StartDiscoveryListener()
         {
@@ -62,9 +60,7 @@ namespace GhostLink
             {
                 try
                 {
-                    UdpClient udpListener = new UdpClient(DiscoveryPort); // Correct way
-                    Console.WriteLine("UDP listener bound to port " + DiscoveryPort);
-
+                    UdpClient udpListener = new UdpClient(DiscoveryPort);
                     IPEndPoint remoteEP = new IPEndPoint(IPAddress.Any, 0);
 
                     while (true)
@@ -73,25 +69,16 @@ namespace GhostLink
                         string message = Encoding.UTF8.GetString(received);
 
                         if (IsFromSelf(remoteEP.Address))
-                        {
-                            // Skip self response
                             continue;
-                        }
 
                         if (message.Contains("GhostLink Discovery Request"))
                         {
-                            string username = "Unknown";
-                            Dispatcher.Invoke(() =>
-                            {
-                                username = UsernameTextBox?.Text ?? "Unknown";
-                            });
-
+                            string username = Dispatcher.Invoke(() => UsernameTextBox?.Text ?? "Unknown");
                             string reply = $"GhostLink Response from {username}";
                             byte[] replyBytes = Encoding.UTF8.GetBytes(reply);
 
                             var responseEP = new IPEndPoint(remoteEP.Address, DiscoveryPort);
                             udpListener.Send(replyBytes, replyBytes.Length, responseEP);
-
                         }
                         else if (message.Contains("GhostLink Response from"))
                         {
@@ -103,7 +90,7 @@ namespace GhostLink
                                 if (!PeerListBox.Items.Contains(display))
                                 {
                                     PeerListBox.Items.Add(display);
-                                    AddMessage($"[Discovery] {display} discovered.", isOwnMessage: true);
+                                    AddMessage($"[Discovery] {display} discovered.", true);
                                 }
                             });
                         }
@@ -111,13 +98,10 @@ namespace GhostLink
                 }
                 catch (SocketException ex)
                 {
-                    Console.WriteLine($"[UDP] Discovery listener error: {ex.Message}");
-                    Dispatcher.Invoke(() => UpdateStatus("Discovery listener error."));
+                    Dispatcher.Invoke(() => UpdateStatus($"Discovery listener error: {ex.Message}"));
                 }
             })
-            {
-                IsBackground = true
-            };
+            { IsBackground = true };
 
             discoveryThread.Start();
         }
@@ -133,8 +117,7 @@ namespace GhostLink
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[TCP] Listener error: {ex.Message}");
-                    UpdateStatus("Listener error.");
+                    Dispatcher.Invoke(() => UpdateStatus($"Listener error: {ex.Message}"));
                 }
             }
         }
@@ -156,9 +139,8 @@ namespace GhostLink
 
         private void AddMessage(string message, bool isOwnMessage = false)
         {
-            string formatted = message;
             string timestamp = DateTime.Now.ToString("HH:mm:ss");
-            formatted = $"[{timestamp}] {message}";
+            string formatted = $"[{timestamp}] {message}";
 
             var textBlock = new TextBlock
             {
@@ -166,9 +148,7 @@ namespace GhostLink
                 Margin = new Thickness(5, 2, 5, 2),
                 FontSize = 14,
                 TextWrapping = TextWrapping.Wrap,
-                Foreground = isOwnMessage
-                    ? new SolidColorBrush(Color.FromRgb(144, 238, 144))
-                    : new SolidColorBrush(Colors.White)
+                Foreground = new SolidColorBrush(isOwnMessage ? Color.FromRgb(144, 238, 144) : Colors.White)
             };
 
             ChatPanel.Children.Add(textBlock);
@@ -184,8 +164,7 @@ namespace GhostLink
             string messageText = InputBox.Text.Trim();
             string username = UsernameTextBox?.Text.Trim();
 
-            if (string.IsNullOrEmpty(messageText))
-                return;
+            if (string.IsNullOrEmpty(messageText)) return;
 
             if (!IPAddress.TryParse(IpTextBox.Text, out var ip))
             {
@@ -208,13 +187,11 @@ namespace GhostLink
                             stream.Write(data, 0, data.Length);
                         }
                     }
-
-                    Dispatcher.Invoke(() => AddMessage(fullMessage, isOwnMessage: true));
+                    Dispatcher.Invoke(() => AddMessage(fullMessage, true));
                 }
                 catch (SocketException ex)
                 {
-                    Console.WriteLine($"[TCP] Send error: {ex.Message}");
-                    Dispatcher.Invoke(() => UpdateStatus("Send failed."));
+                    Dispatcher.Invoke(() => UpdateStatus($"Send failed: {ex.Message}"));
                 }
             });
 
@@ -236,8 +213,7 @@ namespace GhostLink
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[UDP] Discovery error: {ex.Message}");
-                UpdateStatus("Discovery failed.");
+                UpdateStatus($"Discovery failed: {ex.Message}");
             }
             finally
             {
@@ -247,11 +223,14 @@ namespace GhostLink
 
         private void StartChatWithSelectedPeer(object sender, RoutedEventArgs e)
         {
-            if (PeerListBox.SelectedItem is string peerName)
+            if (PeerListBox.SelectedItem is string peerEntry)
             {
-                ChatHeader.Text = $"Chatting with: {peerName}";
-                SelectedPeerText.Text = peerName;
-                UpdateStatus($"Chatting with {peerName}.");
+                string ip = ExtractIpFromDisplay(peerEntry);
+                IpTextBox.Text = ip;
+
+                ChatHeader.Text = $"Chatting with: {peerEntry}";
+                SelectedPeerText.Text = peerEntry;
+                UpdateStatus($"Chatting with {peerEntry}.");
             }
             else
             {
@@ -259,14 +238,58 @@ namespace GhostLink
             }
         }
 
-        private void UpdateStatus(string text)
+        private string ExtractIpFromDisplay(string display)
         {
-            StatusText.Text = text;
+            int start = display.IndexOf('(');
+            int end = display.IndexOf(')');
+            if (start != -1 && end != -1 && end > start)
+            {
+                return display.Substring(start + 1, end - start - 1);
+            }
+            return display;
         }
 
         private void Connect_Click(object sender, RoutedEventArgs e)
         {
-            UpdateStatus("Manual connection initiated.");
+            if (!IPAddress.TryParse(IpTextBox.Text, out var ip))
+            {
+                MessageBox.Show("Invalid IP address.");
+                return;
+            }
+
+            UpdateStatus($"Attempting connection to {ip}...");
+            string testMessage = $"{UsernameTextBox.Text} is online";
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    using (var client = new TcpClient())
+                    {
+                        client.Connect(ip, ChatPort);
+                        using (var stream = client.GetStream())
+                        {
+                            byte[] data = Encoding.UTF8.GetBytes(testMessage);
+                            stream.Write(data, 0, data.Length);
+                        }
+                    }
+
+                    Dispatcher.Invoke(() =>
+                    {
+                        AddMessage(testMessage, true);
+                        UpdateStatus($"Connected to {ip}.");
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Dispatcher.Invoke(() => UpdateStatus($"Connection failed: {ex.Message}"));
+                }
+            });
+        }
+
+        private void UpdateStatus(string text)
+        {
+            Dispatcher.Invoke(() => StatusText.Text = text);
         }
 
         protected override void OnClosed(EventArgs e)
