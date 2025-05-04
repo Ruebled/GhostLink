@@ -88,7 +88,10 @@ namespace GhostLink
 
                             string reply = $"GhostLink Response from {username}";
                             byte[] replyBytes = Encoding.UTF8.GetBytes(reply);
-                            udpListener.Send(replyBytes, replyBytes.Length, remoteEP);
+
+                            var responseEP = new IPEndPoint(remoteEP.Address, DiscoveryPort);
+                            udpListener.Send(replyBytes, replyBytes.Length, responseEP);
+
                         }
                         else if (message.Contains("GhostLink Response from"))
                         {
