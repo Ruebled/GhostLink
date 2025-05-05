@@ -1,7 +1,10 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,6 +22,11 @@ namespace GhostLink
         private const int BufferSize = 1024;
         private const int ChatPort = 5005;
         private const int DiscoveryPort = 5051;
+
+        private PeerConnection currentPeerConnection;
+
+        private readonly Dictionary<IPAddress, DateTime> respondedPeers = new();
+        private readonly HashSet<string> discoveredPeers = new();
 
         public MainWindow()
         {
@@ -73,12 +81,18 @@ namespace GhostLink
 
                         if (message.Contains("GhostLink Discovery Request"))
                         {
-                            string username = Dispatcher.Invoke(() => UsernameTextBox?.Text ?? "Unknown");
-                            string reply = $"GhostLink Response from {username}";
-                            byte[] replyBytes = Encoding.UTF8.GetBytes(reply);
+                            if (!respondedPeers.ContainsKey(remoteEP.Address) ||
+                                (DateTime.Now - respondedPeers[remoteEP.Address]).TotalSeconds > 60)
+                            {
+                                respondedPeers[remoteEP.Address] = DateTime.Now;
 
-                            var responseEP = new IPEndPoint(remoteEP.Address, DiscoveryPort);
-                            udpListener.Send(replyBytes, replyBytes.Length, responseEP);
+                                string username = Dispatcher.Invoke(() => UsernameTextBox?.Text ?? "Unknown");
+                                string reply = $"GhostLink Response from {username}";
+                                byte[] replyBytes = Encoding.UTF8.GetBytes(reply);
+
+                                var responseEP = new IPEndPoint(remoteEP.Address, DiscoveryPort);
+                                udpListener.Send(replyBytes, replyBytes.Length, responseEP);
+                            }
                         }
                         else if (message.Contains("GhostLink Response from"))
                         {
@@ -87,8 +101,9 @@ namespace GhostLink
                                 string peerName = message.Replace("GhostLink Response from ", "").Trim();
                                 string display = $"{peerName} ({remoteEP.Address})";
 
-                                if (!PeerListBox.Items.Contains(display))
+                                if (!discoveredPeers.Contains(display))
                                 {
+                                    discoveredPeers.Add(display);
                                     PeerListBox.Items.Add(display);
                                     AddMessage($"[Discovery] {display} discovered.", true);
                                 }
@@ -112,27 +127,17 @@ namespace GhostLink
             {
                 try
                 {
-                    var client = await listener.AcceptTcpClientAsync();
-                    _ = HandleClientAsync(client);
+                    var tcpClient = await listener.AcceptTcpClientAsync();
+                    _ = Task.Run(async () =>
+                    {
+                        var peer = new PeerConnection(((IPEndPoint)tcpClient.Client.RemoteEndPoint).Address.ToString());
+                        await peer.HandleIncomingConnectionAsync(tcpClient);
+                        peer.OnMessageReceived += msg => Dispatcher.Invoke(() => AddMessage(msg));
+                    });
                 }
                 catch (Exception ex)
                 {
                     Dispatcher.Invoke(() => UpdateStatus($"Listener error: {ex.Message}"));
-                }
-            }
-        }
-
-        private async Task HandleClientAsync(TcpClient client)
-        {
-            using (client)
-            using (var stream = client.GetStream())
-            {
-                byte[] buffer = new byte[BufferSize];
-                int bytesRead;
-                while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
-                {
-                    string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                    Dispatcher.Invoke(() => AddMessage(message));
                 }
             }
         }
@@ -159,41 +164,30 @@ namespace GhostLink
             }
         }
 
-        private void Send_Click(object sender, RoutedEventArgs e)
+        private async void Send_Click(object sender, RoutedEventArgs e)
         {
             string messageText = InputBox.Text.Trim();
-            string username = UsernameTextBox?.Text.Trim();
+            string username = UsernameTextBox?.Text?.Trim() ?? "Unknown";
 
             if (string.IsNullOrEmpty(messageText)) return;
 
-            if (!IPAddress.TryParse(IpTextBox.Text, out var ip))
+            if (currentPeerConnection == null || !currentPeerConnection.IsConnected)
             {
-                MessageBox.Show("Invalid IP address.");
+                MessageBox.Show("Not connected. Use 'Connect' first.");
                 return;
             }
 
-            string fullMessage = string.IsNullOrEmpty(username) ? messageText : $"{username}: {messageText}";
+            string fullMessage = $"{username}: {messageText}";
 
-            Task.Run(() =>
+            try
             {
-                try
-                {
-                    using (var client = new TcpClient())
-                    {
-                        client.Connect(ip, ChatPort);
-                        using (var stream = client.GetStream())
-                        {
-                            byte[] data = Encoding.UTF8.GetBytes(fullMessage);
-                            stream.Write(data, 0, data.Length);
-                        }
-                    }
-                    Dispatcher.Invoke(() => AddMessage(fullMessage, true));
-                }
-                catch (SocketException ex)
-                {
-                    Dispatcher.Invoke(() => UpdateStatus($"Send failed: {ex.Message}"));
-                }
-            });
+                await currentPeerConnection.SendMessageAsync(fullMessage);
+                AddMessage(fullMessage, true);
+            }
+            catch (Exception ex)
+            {
+                UpdateStatus($"Send failed: {ex.Message}");
+            }
 
             InputBox.Clear();
         }
@@ -249,7 +243,7 @@ namespace GhostLink
             return display;
         }
 
-        private void Connect_Click(object sender, RoutedEventArgs e)
+        private async void Connect_Click(object sender, RoutedEventArgs e)
         {
             if (!IPAddress.TryParse(IpTextBox.Text, out var ip))
             {
@@ -258,33 +252,25 @@ namespace GhostLink
             }
 
             UpdateStatus($"Attempting connection to {ip}...");
-            string testMessage = $"{UsernameTextBox.Text} is online";
 
-            Task.Run(() =>
+            string username = UsernameTextBox?.Text?.Trim() ?? "Unknown";
+            string testMessage = $"{username} is online";
+
+            currentPeerConnection = new PeerConnection(ip.ToString());
+            currentPeerConnection.OnMessageReceived += msg => Dispatcher.Invoke(() => AddMessage(msg));
+
+            try
             {
-                try
-                {
-                    using (var client = new TcpClient())
-                    {
-                        client.Connect(ip, ChatPort);
-                        using (var stream = client.GetStream())
-                        {
-                            byte[] data = Encoding.UTF8.GetBytes(testMessage);
-                            stream.Write(data, 0, data.Length);
-                        }
-                    }
-
-                    Dispatcher.Invoke(() =>
-                    {
-                        AddMessage(testMessage, true);
-                        UpdateStatus($"Connected to {ip}.");
-                    });
-                }
-                catch (Exception ex)
-                {
-                    Dispatcher.Invoke(() => UpdateStatus($"Connection failed: {ex.Message}"));
-                }
-            });
+                await currentPeerConnection.ConnectAsync(ChatPort);
+                await currentPeerConnection.SendMessageAsync(testMessage);
+                AddMessage(testMessage, true);
+                UpdateStatus($"Connected to {ip}.");
+            }
+            catch (Exception ex)
+            {
+                UpdateStatus($"Connection failed: {ex.Message}");
+                currentPeerConnection = null;
+            }
         }
 
         private void UpdateStatus(string text)

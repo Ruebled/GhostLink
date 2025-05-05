@@ -15,8 +15,9 @@ namespace GhostLink
 
         private TcpClient client;
         private NetworkStream stream;
-        private RSACryptoServiceProvider rsa;
+        private RSACryptoServiceProvider ownRsa;
         private Aes aes;
+        private bool keysExchanged = false;
 
         public event Action<string> OnMessageReceived;
 
@@ -25,74 +26,102 @@ namespace GhostLink
             IP = ip;
             DisplayName = displayName;
 
-            rsa = new RSACryptoServiceProvider(2048);
+            ownRsa = new RSACryptoServiceProvider(2048);
             aes = Aes.Create();
             aes.GenerateKey();
             aes.GenerateIV();
         }
 
+        // Used for outgoing connection
         public async Task ConnectAsync(int port)
         {
             client = new TcpClient();
             await client.ConnectAsync(IP, port);
             stream = client.GetStream();
-
-            await ExchangeKeysAsync();
+            await PerformKeyExchangeAsync(asInitiator: true);
             _ = Task.Run(ReceiveLoop);
         }
 
-        private async Task ExchangeKeysAsync()
+        // Used for incoming connection
+        public async Task HandleIncomingConnectionAsync(TcpClient incomingClient)
         {
-            // Step 1: Send public RSA key
-            string publicKey = rsa.ToXmlString(false);
-            byte[] publicKeyBytes = Encoding.UTF8.GetBytes(publicKey);
-            await stream.WriteAsync(publicKeyBytes, 0, publicKeyBytes.Length);
+            client = incomingClient;
+            stream = client.GetStream();
+            await PerformKeyExchangeAsync(asInitiator: false);
+            _ = Task.Run(ReceiveLoop);
+        }
 
-            // Step 2: Receive peer's public RSA key
-            byte[] buffer = new byte[2048];
-            int read = await stream.ReadAsync(buffer, 0, buffer.Length);
-            string peerPublicKey = Encoding.UTF8.GetString(buffer, 0, read);
-
-            RSACryptoServiceProvider peerRsa = new RSACryptoServiceProvider();
-            peerRsa.FromXmlString(peerPublicKey);
-
-            // Step 3: Send AES key encrypted with peer's RSA key
-            using (var ms = new MemoryStream())
+        private async Task PerformKeyExchangeAsync(bool asInitiator)
+        {
+            if (asInitiator)
             {
-                ms.Write(aes.Key, 0, aes.Key.Length);
-                ms.Write(aes.IV, 0, aes.IV.Length);
-                byte[] encryptedAesKey = peerRsa.Encrypt(ms.ToArray(), false);
-                await stream.WriteAsync(encryptedAesKey, 0, encryptedAesKey.Length);
+                // 1. Send own public key
+                string publicKey = ownRsa.ToXmlString(false);
+                byte[] publicKeyBytes = Encoding.UTF8.GetBytes(publicKey);
+                await stream.WriteAsync(publicKeyBytes, 0, publicKeyBytes.Length);
+
+                // 2. Receive peer public key
+                byte[] buffer = new byte[4096];
+                int received = await stream.ReadAsync(buffer, 0, buffer.Length);
+                string peerPublicKeyXml = Encoding.UTF8.GetString(buffer, 0, received);
+                RSACryptoServiceProvider peerRsa = new RSACryptoServiceProvider();
+                peerRsa.FromXmlString(peerPublicKeyXml);
+
+                // 3. Send AES key + IV encrypted with peer's public RSA key
+                byte[] aesBundle = aes.Key.Concat(aes.IV).ToArray();
+                byte[] encryptedBundle = peerRsa.Encrypt(aesBundle, false);
+                await stream.WriteAsync(encryptedBundle, 0, encryptedBundle.Length);
             }
+            else
+            {
+                // 1. Receive initiator's public key
+                byte[] buffer = new byte[4096];
+                int received = await stream.ReadAsync(buffer, 0, buffer.Length);
+                string peerPublicKeyXml = Encoding.UTF8.GetString(buffer, 0, received);
+                RSACryptoServiceProvider peerRsa = new RSACryptoServiceProvider();
+                peerRsa.FromXmlString(peerPublicKeyXml);
+
+                // 2. Send our own public key
+                string ownPublicKey = ownRsa.ToXmlString(false);
+                byte[] ownKeyBytes = Encoding.UTF8.GetBytes(ownPublicKey);
+                await stream.WriteAsync(ownKeyBytes, 0, ownKeyBytes.Length);
+
+                // 3. Receive AES key + IV
+                received = await stream.ReadAsync(buffer, 0, buffer.Length);
+                byte[] decrypted = ownRsa.Decrypt(buffer.Take(received).ToArray(), false);
+                aes.Key = decrypted.Take(32).ToArray();
+                aes.IV = decrypted.Skip(32).Take(16).ToArray();
+            }
+
+            keysExchanged = true;
         }
 
         private async Task ReceiveLoop()
         {
-            byte[] buffer = new byte[2048];
+            byte[] buffer = new byte[4096];
 
-            while (true)
+            try
             {
-                try
+                while (true)
                 {
-                    int read = await stream.ReadAsync(buffer, 0, buffer.Length);
-                    if (read == 0) break;
+                    int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+                    if (bytesRead == 0) break;
 
-                    byte[] encrypted = new byte[read];
-                    Array.Copy(buffer, encrypted, read);
-
+                    byte[] encrypted = buffer[..bytesRead];
                     string message = DecryptMessage(encrypted);
+
                     OnMessageReceived?.Invoke(message);
                 }
-                catch
-                {
-                    break;
-                }
+            }
+            catch
+            {
+                OnMessageReceived?.Invoke("[Connection closed]");
             }
         }
 
         public async Task SendMessageAsync(string message)
         {
-            if (!IsConnected) return;
+            if (!IsConnected || !keysExchanged) return;
 
             byte[] encrypted = EncryptMessage(message);
             await stream.WriteAsync(encrypted, 0, encrypted.Length);
@@ -100,24 +129,21 @@ namespace GhostLink
 
         private byte[] EncryptMessage(string message)
         {
-            using (var encryptor = aes.CreateEncryptor())
-            {
-                byte[] plain = Encoding.UTF8.GetBytes(message);
-                return encryptor.TransformFinalBlock(plain, 0, plain.Length);
-            }
+            using var encryptor = aes.CreateEncryptor();
+            byte[] plain = Encoding.UTF8.GetBytes(message);
+            return encryptor.TransformFinalBlock(plain, 0, plain.Length);
         }
 
         private string DecryptMessage(byte[] encrypted)
         {
-            using (var decryptor = aes.CreateDecryptor())
-            {
-                byte[] decrypted = decryptor.TransformFinalBlock(encrypted, 0, encrypted.Length);
-                return Encoding.UTF8.GetString(decrypted);
-            }
+            using var decryptor = aes.CreateDecryptor();
+            byte[] plain = decryptor.TransformFinalBlock(encrypted, 0, encrypted.Length);
+            return Encoding.UTF8.GetString(plain);
         }
 
         public void Close()
         {
+            stream?.Close();
             client?.Close();
         }
     }
