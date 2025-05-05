@@ -105,7 +105,7 @@ namespace GhostLink
                                 {
                                     discoveredPeers.Add(display);
                                     PeerListBox.Items.Add(display);
-                                    AddMessage($"[Discovery] {display} discovered.", true);
+                                    UpdateStatus($"[Discovery] {display} discovered.");
                                 }
                             });
                         }
@@ -263,7 +263,7 @@ namespace GhostLink
             {
                 await currentPeerConnection.ConnectAsync(ChatPort);
                 await currentPeerConnection.SendMessageAsync(testMessage);
-                AddMessage(testMessage, true);
+                UpdateStatus(testMessage);
                 UpdateStatus($"Connected to {ip}.");
             }
             catch (Exception ex)
