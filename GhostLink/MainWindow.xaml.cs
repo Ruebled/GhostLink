@@ -1,13 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
-using System.Security.Cryptography;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -27,6 +20,8 @@ namespace GhostLink
 
         private readonly Dictionary<IPAddress, DateTime> respondedPeers = new();
         private readonly HashSet<string> discoveredPeers = new();
+
+        private CancellationTokenSource listenerCts = new CancellationTokenSource();
 
         public MainWindow()
         {
@@ -50,8 +45,10 @@ namespace GhostLink
             listener.Start();
             isListening = true;
 
-            Thread listenerThread = new Thread(ListenForClientsAsync) { IsBackground = true };
-            listenerThread.Start();
+            listenerCts = new CancellationTokenSource();
+            CancellationToken token = listenerCts.Token;
+
+            Task.Run(() => ListenForClientsAsync(token));
 
             Dispatcher.Invoke(() => UpdateStatus($"Listening on port {ChatPort}..."));
         }
@@ -121,26 +118,36 @@ namespace GhostLink
             discoveryThread.Start();
         }
 
-        private async void ListenForClientsAsync()
+        private async void ListenForClientsAsync(CancellationToken token)
         {
-            while (isListening)
+            try
             {
-                try
+                while (!token.IsCancellationRequested)
                 {
-                    var tcpClient = await listener.AcceptTcpClientAsync();
+                    var tcpClient = await listener.AcceptTcpClientAsync(token); // .NET 6+
                     _ = Task.Run(async () =>
                     {
                         var peer = new PeerConnection(((IPEndPoint)tcpClient.Client.RemoteEndPoint).Address.ToString());
-                        await peer.HandleIncomingConnectionAsync(tcpClient);
                         peer.OnMessageReceived += msg => Dispatcher.Invoke(() => AddMessage(msg));
+                        await peer.HandleIncomingConnectionAsync(tcpClient);
                     });
                 }
-                catch (Exception ex)
-                {
-                    Dispatcher.Invoke(() => UpdateStatus($"Listener error: {ex.Message}"));
-                }
+            }
+            catch (OperationCanceledException)
+            {
+                // expected on cancellation
+            }
+            catch (ObjectDisposedException)
+            {
+                // expected when listener is stopped
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.Invoke(() => UpdateStatus($"Listener error: {ex.Message}"));
             }
         }
+
+
 
         private void AddMessage(string message, bool isOwnMessage = false)
         {
@@ -282,6 +289,7 @@ namespace GhostLink
         {
             base.OnClosed(e);
             isListening = false;
+            listenerCts.Cancel();
             listener?.Stop();
         }
     }
